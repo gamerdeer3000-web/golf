@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Golf Score Tracker</title>
+    <!-- Use the Inter font from Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- Load Tailwind CSS from CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Link to the Manifest File -->
+    <link rel="manifest" href="manifest.json">
+    <!-- Import Firebase libraries -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // User-provided Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyDJhdsi5MJddcPHfu8APJMVmElb7cE_iV8",
+            authDomain: "golf-scorecard-app-7edad.firebaseapp.com",
+            projectId: "golf-scorecard-app-7edad",
+            storageBucket: "golf-scorecard-app-7edad.appspot.com",
+            messagingSenderId: "909060024321",
+            appId: "1:909060024321:web:b94b1b49d49b4b567d3800",
+            measurementId: "G-HS260VPJYN"
+        };
+        
+        const appId = firebaseConfig.projectId; // Use projectId as the app ID
+        let app, db, auth, userId, unsubscribeScorecards;
+
+        // Function to initialize Firebase
+        function initializeFirebase() {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setupAuthListener();
+            } catch (error) {
+                console.error("Error initializing Firebase:", error);
+                showMessage("Could not connect to the service. Please try again later.", 'error', 'auth-message');
+            }
+        }
+
+        // Global game state object
+        const gameState = {
+            players: [],
+            scores: [],
+            pars: [],
+            numHoles: 18,
+            currentDocId: null
+        };
+        
+        // Array of golf tips
+        const golfTips = [
+            "Keep your head down and your eyes on the ball through impact.",
+            "A smooth, rhythmic swing is more effective than a fast, jerky one.",
+            "Maintain a light grip pressure on the club to avoid tension.",
+            "Your setup is crucial. Aim your clubface first, then align your body.",
+            "On short putts, accelerate through the ball.",
+            "Don't forget to warm up before you play. A few stretches can make a big difference.",
+            "Know your club distances. It's better to be short of the green than long.",
+            "Play the course, not your opponent. Focus on your own game.",
+            "When chipping, keep your weight on your front foot.",
+            "Visualize the shot you want to hit before you swing."
+        ];
+
+        // DOM elements
+        const authSection = document.getElementById('auth-section');
+        const appContent = document.getElementById('app-content');
+        const mainSection = document.getElementById('main-section');
+        const setupSection = document.getElementById('setup-section');
+        const scorecardSection = document.getElementById('scorecard-section');
+        const resultsSection = document.getElementById('results-section');
+        const settingsSection = document.getElementById('settings-section');
+        const scorecardList = document.getElementById('scorecard-list');
+        const startGameBtn = document.getElementById('startGameBtn');
+        const newGameBtn = document.getElementById('newGameBtn');
+        const endGameBtn = document.getElementById('endGameBtn');
+        const backToMainBtn = document.getElementById('backToMainBtn');
+        const settingsBtn = document.getElementById('settingsBtn');
+        const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+        const scorecardTable = document.getElementById('scorecard');
+        const messageBox = document.getElementById('message-box');
+        const authMessageBox = document.getElementById('auth-message');
+        const resultsContent = document.getElementById('results-content');
+        const resultsCloseBtn = document.getElementById('results-close-btn');
+        const logoutBtnSettings = document.getElementById('logoutBtnSettings');
+        
+        // Auth form elements
+        const loginForm = document.getElementById('login-form');
+        const signupForm = document.getElementById('signup-form');
+        const showSignupLink = document.getElementById('show-signup');
+        const showLoginLink = document.getElementById('show-login');
+
+        // Modal for saving the scorecard
+        const saveModal = document.getElementById('save-modal');
+        const saveModalInput = document.getElementById('save-modal-input');
+        const saveModalSaveBtn = document.getElementById('save-modal-save-btn');
+        const saveModalCloseBtn = document.getElementById('save-modal-close-btn');
+
+        // Golf tips modal elements
+        const golfTipsBtn = document.getElementById('golf-tips-btn');
+        const tipsModal = document.getElementById('tips-modal');
+        const tipsContent = document.getElementById('tips-content');
+        const tipsModalCloseBtn = document.getElementById('tips-modal-close-btn');
+
+        // Delete confirmation modal elements
+        const deleteConfirmModal = document.getElementById('delete-confirm-modal');
+        const deleteConfirmMessage = document.getElementById('delete-confirm-message');
+        const deleteConfirmBtn = document.getElementById('delete-confirm-btn');
+        const deleteCancelBtn = document.getElementById('delete-cancel-btn');
+
+        // Logout confirmation modal elements
+        const logoutConfirmModal = document.getElementById('logout-confirm-modal');
+        const logoutConfirmBtn = document.getElementById('logout-confirm-btn');
+        const logoutCancelBtn = document.getElementById('logout-cancel-btn');
+
+        // Helper function to show a specific section within the app
+        function showSection(sectionId) {
+            mainSection.classList.add('hidden');
+            setupSection.classList.add('hidden');
+            scorecardSection.classList.add('hidden');
+            resultsSection.classList.add('hidden');
+            settingsSection.classList.add('hidden');
+            document.getElementById(sectionId).classList.remove('hidden');
+
+            // Toggle settings button visibility
+            if (sectionId === 'settings-section') {
+                settingsBtn.classList.add('hidden');
+                closeSettingsBtn.classList.remove('hidden');
+            } else {
+                settingsBtn.classList.remove('hidden');
+                closeSettingsBtn.classList.add('hidden');
+            }
+        }
+
+        // Helper function to display messages
+        function showMessage(message, type = 'error', elementId = 'message-box') {
+            const box = document.getElementById(elementId);
+            box.textContent = message;
+            box.className = 'mb-4 font-medium ' + (type === 'error' ? 'text-red-600' : 'text-green-600');
+            setTimeout(() => box.textContent = '', 5000);
+        }
+
+        // Sets up a real-time listener for the user's scorecards
+        function setupScorecardListener() {
+            if (unsubscribeScorecards) {
+                unsubscribeScorecards(); // Detach any previous listener
+            }
+            if (!db || !userId) {
+                console.warn("Firestore not ready or user not authenticated.");
+                return;
+            }
+            const scorecardsCollection = collection(db, `artifacts/${appId}/users/${userId}/scorecards`);
+            unsubscribeScorecards = onSnapshot(scorecardsCollection, (snapshot) => {
+                const scorecards = [];
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    try {
+                        const scores = JSON.parse(data.scores);
+                        const pars = data.pars ? JSON.parse(data.pars) : Array(18).fill(0);
+                        scorecards.push({ id: doc.id, title: data.title, players: data.players, scores, pars });
+                    } catch(e) {
+                        console.error("Could not parse data for doc:", doc.id, e);
+                    }
+                });
+                renderScorecardList(scorecards);
+            });
+        }
+
+        // Renders the list of saved scorecards on the main screen
+        function renderScorecardList(scorecards) {
+            scorecardList.innerHTML = '';
+            if (scorecards.length === 0) {
+                scorecardList.innerHTML = '<li class="text-center text-gray-500 dark:text-gray-400">No saved scorecards. Start a new game!</li>';
+            } else {
+                scorecards.forEach(card => {
+                    const li = document.createElement('li');
+                    li.className = 'flex justify-between items-center p-4 my-2 bg-gray-50 rounded-lg shadow-sm hover:bg-gray-100 transition dark:bg-gray-700 dark:hover:bg-gray-600';
+                    
+                    const titleDiv = document.createElement('div');
+                    titleDiv.textContent = card.title;
+                    titleDiv.className = 'font-semibold text-lg cursor-pointer text-gray-800 dark:text-gray-100';
+                    titleDiv.onclick = () => loadScorecard(card);
+
+                    const rightDiv = document.createElement('div');
+                    rightDiv.className = 'flex items-center';
+
+                    if (card.scores && card.scores.length > 0 && card.pars) {
+                        const totalScore = card.scores[0].reduce((sum, score) => sum + (score || 0), 0);
+                        const totalPar = card.pars.reduce((sum, par) => sum + (par || 0), 0);
+                        const toPar = totalScore - totalPar;
+                        const toParString = toPar > 0 ? `+${toPar}` : toPar;
+
+                        const scoreDiv = document.createElement('div');
+                        scoreDiv.className = 'font-semibold text-gray-700 dark:text-gray-300 mr-4';
+                        
+                        const scoreSpan = document.createElement('span');
+                        scoreSpan.textContent = `${totalScore} `;
+                        
+                        const toParSpan = document.createElement('span');
+                        toParSpan.textContent = `(${toParString})`;
+                        
+                        if (toPar < 0) toParSpan.classList.add('text-green-600');
+                        if (toPar > 0) toParSpan.classList.add('text-red-600');
+
+                        scoreDiv.appendChild(scoreSpan);
+                        scoreDiv.appendChild(toParSpan);
+                        rightDiv.appendChild(scoreDiv);
+                    }
+
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-500 hover:text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>';
+                    deleteBtn.className = 'ml-4';
+                    deleteBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        showDeleteConfirmation(card.id, card.title);
+                    };
+                    rightDiv.appendChild(deleteBtn);
+                    
+                    li.appendChild(titleDiv);
+                    li.appendChild(rightDiv);
+                    scorecardList.appendChild(li);
+                });
+            }
+        }
+
+        // Loads a scorecard from Firestore and populates the UI
+        function loadScorecard(cardData) {
+            gameState.players = cardData.players;
+            gameState.scores = cardData.scores;
+            gameState.pars = cardData.pars;
+            gameState.currentDocId = cardData.id;
+            generateScorecard();
+            showSection('scorecard-section');
+        }
+        
+        // Shows the delete confirmation modal
+        function showDeleteConfirmation(docId, title) {
+            deleteConfirmMessage.textContent = `Are you sure you want to delete "${title}"?`;
+            deleteConfirmBtn.dataset.docId = docId;
+            deleteConfirmModal.classList.remove('hidden');
+        }
+
+        // Deletes a scorecard from Firestore
+        async function deleteScorecard(docId) {
+            if (!db || !userId) {
+                showMessage("Database not ready.", 'error');
+                return;
+            }
+            try {
+                const docRef = doc(db, `artifacts/${appId}/users/${userId}/scorecards`, docId);
+                await deleteDoc(docRef);
+                showMessage("Scorecard deleted successfully.", 'success');
+            } catch (e) {
+                console.error("Error deleting document: ", e);
+                showMessage("Failed to delete scorecard.", 'error');
+            }
+        }
+
+        // Handles starting a new game
+        newGameBtn.addEventListener('click', () => {
+            gameState.players = [];
+            gameState.scores = [];
+            gameState.pars = [];
+            gameState.currentDocId = null;
+            document.getElementById('player1').value = '';
+            document.getElementById('player2').value = '';
+            document.getElementById('player3').value = '';
+            document.getElementById('player4').value = '';
+            showSection('setup-section');
+        });
+
+        // Handles starting the game from setup screen
+        startGameBtn.addEventListener('click', () => {
+            const playerInputs = [
+                document.getElementById('player1').value.trim(),
+                document.getElementById('player2').value.trim(),
+                document.getElementById('player3').value.trim(),
+                document.getElementById('player4').value.trim()
+            ];
+            gameState.players = playerInputs.filter(name => name !== '');
+
+            if (gameState.players.length === 0) {
+                showMessage("Please enter at least one player name to start.");
+                return;
+            }
+            gameState.scores = gameState.players.map(() => Array(gameState.numHoles).fill(0));
+            gameState.pars = Array(gameState.numHoles).fill(0);
+            generateScorecard();
+            showSection('scorecard-section');
+        });
+
+        // Generates the scorecard table dynamically
+        function generateScorecard() {
+            const thead = scorecardTable.querySelector('thead');
+            const tbody = scorecardTable.querySelector('tbody');
+            thead.innerHTML = '';
+            tbody.innerHTML = '';
+
+            // Create Header Row
+            const headerRow = thead.insertRow();
+            headerRow.className = 'bg-gray-100 dark:bg-gray-700';
+            ['Hole', 'Par'].forEach(text => {
+                const th = document.createElement('th');
+                th.textContent = text;
+                th.className = 'p-2 border text-center text-sm font-semibold text-gray-800 dark:text-gray-300 uppercase tracking-wider';
+                headerRow.appendChild(th);
+            });
+            gameState.players.forEach(player => {
+                const thPlayer = document.createElement('th');
+                thPlayer.textContent = player;
+                thPlayer.className = 'p-2 border text-center text-sm font-semibold text-gray-800 dark:text-gray-300 uppercase tracking-wider';
+                headerRow.appendChild(thPlayer);
+                const thToPar = document.createElement('th');
+                thToPar.textContent = '+/-';
+                thToPar.className = 'p-2 border text-center text-sm font-semibold text-gray-800 dark:text-gray-300 uppercase tracking-wider';
+                headerRow.appendChild(thToPar);
+            });
+
+            // Create Body Rows
+            for (let i = 0; i < gameState.numHoles; i++) {
+                const row = tbody.insertRow();
+                row.className = 'hover:bg-gray-50 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200';
+                
+                const holeCell = row.insertCell();
+                holeCell.textContent = i + 1;
+                holeCell.className = 'p-2 border font-semibold text-center';
+
+                const parCell = row.insertCell();
+                parCell.className = 'p-1 border';
+                const parInput = document.createElement('input');
+                parInput.type = 'number';
+                parInput.min = '1';
+                parInput.className = 'w-full p-2 text-center rounded-md border-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600';
+                parInput.value = gameState.pars[i] || '';
+                parInput.addEventListener('input', (e) => updatePar(i, e.target.value));
+                parCell.appendChild(parInput);
+
+                gameState.players.forEach((_, playerIndex) => {
+                    const scoreCell = row.insertCell();
+                    scoreCell.className = 'p-1 border';
+                    const scoreInput = document.createElement('input');
+                    scoreInput.type = 'number';
+                    scoreInput.min = '0';
+                    scoreInput.className = 'w-full p-2 text-center rounded-md border-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600';
+                    scoreInput.value = gameState.scores[playerIndex][i] || '';
+                    scoreInput.addEventListener('input', (e) => updateScore(playerIndex, i, e.target.value));
+                    scoreCell.appendChild(scoreInput);
+
+                    const toParCell = row.insertCell();
+                    toParCell.id = `to-par-${playerIndex}-${i}`;
+                    toParCell.className = 'p-2 border text-center font-semibold';
+                });
+            }
+            updateAllTotals();
+        }
+
+        function updatePar(holeIndex, par) {
+            const parsedPar = parseInt(par, 10);
+            gameState.pars[holeIndex] = (!isNaN(parsedPar) && parsedPar > 0) ? parsedPar : 0;
+            updateAllTotals();
+        }
+
+        function updateScore(playerIndex, holeIndex, score) {
+            const parsedScore = parseInt(score, 10);
+            gameState.scores[playerIndex][holeIndex] = (!isNaN(parsedScore) && parsedScore >= 0) ? parsedScore : 0;
+            updateAllTotals();
+        }
+
+        function updateRunningToPar() {
+            gameState.players.forEach((_, playerIndex) => {
+                let runningToPar = 0;
+                for (let i = 0; i < gameState.numHoles; i++) {
+                    const score = gameState.scores[playerIndex][i] || 0;
+                    const par = gameState.pars[i] || 0;
+                    
+                    if (score > 0 && par > 0) {
+                        runningToPar += score - par;
+                    }
+
+                    const toParCell = document.getElementById(`to-par-${playerIndex}-${i}`);
+                    if (toParCell) {
+                        if (score > 0 && par > 0) {
+                            toParCell.textContent = runningToPar > 0 ? `+${runningToPar}` : runningToPar;
+                            toParCell.classList.remove('text-red-600', 'text-green-600');
+                            if (runningToPar < 0) toParCell.classList.add('text-green-600');
+                            if (runningToPar > 0) toParCell.classList.add('text-red-600');
+                        } else {
+                            toParCell.textContent = '';
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateAllTotals() {
+            updateRunningToPar();
+            let totalRow = scorecardTable.querySelector('#final-total-row');
+            if (!totalRow) {
+                totalRow = scorecardTable.querySelector('tbody').insertRow();
+                totalRow.id = 'final-total-row';
+            }
+            totalRow.className = 'bg-gray-200 text-gray-900 font-bold text-lg dark:bg-gray-900 dark:text-white';
+            totalRow.innerHTML = ''; 
+
+            const totalLabelCell = totalRow.insertCell();
+            totalLabelCell.textContent = 'Total';
+            totalLabelCell.className = 'p-2 border text-center';
+
+            const totalPar = gameState.pars.reduce((sum, p) => sum + (p || 0), 0);
+            const totalParCell = totalRow.insertCell();
+            totalParCell.textContent = totalPar;
+            totalParCell.className = 'p-2 border text-center';
+            
+            gameState.players.forEach((_, playerIndex) => {
+                const totalScore = gameState.scores[playerIndex].reduce((sum, s) => sum + (s || 0), 0);
+                const finalToPar = totalScore - totalPar;
+
+                const totalScoreCell = totalRow.insertCell();
+                totalScoreCell.textContent = totalScore;
+                totalScoreCell.className = 'p-2 border text-center';
+
+                const finalToParCell = totalRow.insertCell();
+                finalToParCell.textContent = finalToPar > 0 ? `+${finalToPar}` : finalToPar;
+                finalToParCell.className = 'p-2 border text-center';
+                if (finalToPar < 0) finalToParCell.classList.add('text-green-600');
+                if (finalToPar > 0) finalToParCell.classList.add('text-red-600');
+            });
+        }
+        
+        endGameBtn.addEventListener('click', () => {
+            saveModal.classList.remove('hidden');
+        });
+
+        saveModalSaveBtn.addEventListener('click', async () => {
+            const scorecardTitle = saveModalInput.value.trim();
+            if (scorecardTitle === "") {
+                showMessage("Please enter a title for your scorecard.", 'error');
+                return;
+            }
+            if (!db || !userId) {
+                showMessage("Database not ready.", 'error');
+                return;
+            }
+            const scorecardData = {
+                title: scorecardTitle,
+                players: gameState.players,
+                scores: JSON.stringify(gameState.scores),
+                pars: JSON.stringify(gameState.pars),
+                createdAt: Date.now()
+            };
+
+            try {
+                const docPath = `artifacts/${appId}/users/${userId}/scorecards`;
+                if (gameState.currentDocId) {
+                    await updateDoc(doc(db, docPath, gameState.currentDocId), scorecardData);
+                    showMessage("Scorecard updated successfully!", 'success');
+                } else {
+                    const docRef = await addDoc(collection(db, docPath), scorecardData);
+                    gameState.currentDocId = docRef.id;
+                    showMessage("Scorecard saved successfully!", 'success');
+                }
+            } catch (e) {
+                console.error("Error saving document: ", e);
+                showMessage("Failed to save scorecard.", 'error');
+            }
+            saveModalInput.value = '';
+            saveModal.classList.add('hidden');
+            showResults();
+        });
+
+        saveModalCloseBtn.addEventListener('click', () => {
+            saveModal.classList.add('hidden');
+        });
+
+        function showResults() {
+            const totalPar = gameState.pars.reduce((sum, p) => sum + (p || 0), 0);
+            const playerTotals = gameState.players.map((player, index) => {
+                const total = gameState.scores[index].reduce((sum, score) => sum + (score || 0), 0);
+                return { name: player, score: total, toPar: total - totalPar };
+            });
+
+            playerTotals.sort((a, b) => a.score - b.score); 
+            
+            const minScore = playerTotals.length > 0 ? playerTotals[0].score : Infinity;
+            const winners = playerTotals.filter(p => p.score === minScore);
+
+            let resultsHtml = playerTotals.map(p => {
+                const toParString = p.toPar > 0 ? `+${p.toPar}` : p.toPar;
+                return `<div>${p.name}: ${p.score} (${toParString})</div>`;
+            }).join('');
+            
+            if (winners.length > 0) {
+                resultsHtml += `<div class="mt-4 font-bold text-green-600 text-2xl dark:text-green-400">${winners.length === 1 ? 'Winner' : 'Winners'}: ${winners.map(w => w.name).join(', ')}!</div>`;
+            }
+            resultsContent.innerHTML = resultsHtml;
+            showSection('results-section');
+        }
+
+        backToMainBtn.addEventListener('click', () => showSection('main-section'));
+        resultsCloseBtn.addEventListener('click', () => showSection('main-section'));
+        settingsBtn.addEventListener('click', () => showSection('settings-section'));
+        closeSettingsBtn.addEventListener('click', () => showSection('main-section'));
+
+        golfTipsBtn.addEventListener('click', () => {
+            tipsContent.textContent = golfTips[Math.floor(Math.random() * golfTips.length)];
+            tipsModal.classList.remove('hidden');
+        });
+        tipsModalCloseBtn.addEventListener('click', () => tipsModal.classList.add('hidden'));
+
+        deleteCancelBtn.addEventListener('click', () => {
+            deleteConfirmModal.classList.add('hidden');
+        });
+
+        deleteConfirmBtn.addEventListener('click', () => {
+            const docId = deleteConfirmBtn.dataset.docId;
+            if (docId) {
+                deleteScorecard(docId);
+            }
+            deleteConfirmModal.classList.add('hidden');
+        });
+
+        logoutCancelBtn.addEventListener('click', () => {
+            logoutConfirmModal.classList.add('hidden');
+        });
+
+        logoutConfirmBtn.addEventListener('click', () => {
+            signOut(auth).catch(error => console.error('Logout error:', error));
+            logoutConfirmModal.classList.add('hidden');
+        });
+
+        function setupAuthListener() {
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userId = user.uid;
+                    authSection.classList.add('hidden');
+                    appContent.classList.remove('hidden');
+                    setupScorecardListener();
+                    showSection('main-section');
+                } else {
+                    userId = null;
+                    authSection.classList.remove('hidden');
+                    appContent.classList.add('hidden');
+                    if (unsubscribeScorecards) unsubscribeScorecards();
+                    scorecardList.innerHTML = '';
+                }
+            });
+        }
+
+        signupForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const email = signupForm['signup-email'].value;
+            const password = signupForm['signup-password'].value;
+            createUserWithEmailAndPassword(auth, email, password)
+                .then(userCredential => signupForm.reset())
+                .catch(error => showMessage(error.message, 'error', 'auth-message'));
+        });
+
+        loginForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const email = loginForm['login-email'].value;
+            const password = loginForm['login-password'].value;
+            signInWithEmailAndPassword(auth, email, password)
+                .then(userCredential => loginForm.reset())
+                .catch(error => showMessage(error.message, 'error', 'auth-message'));
+        });
+
+        logoutBtnSettings.addEventListener('click', () => {
+            logoutConfirmModal.classList.remove('hidden');
+        });
+
+        showSignupLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            loginForm.classList.add('hidden');
+            signupForm.classList.remove('hidden');
+        });
+        showLoginLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            signupForm.classList.add('hidden');
+            loginForm.classList.remove('hidden');
+        });
+
+        function setupPasswordToggle(inputId, toggleId) {
+            const passwordInput = document.getElementById(inputId);
+            const toggle = document.getElementById(toggleId);
+            const eyeIcon = toggle.querySelector('.eye-open');
+            const eyeSlashedIcon = toggle.querySelector('.eye-slashed');
+
+            toggle.addEventListener('click', () => {
+                if (passwordInput.type === 'password') {
+                    passwordInput.type = 'text';
+                    eyeIcon.classList.add('hidden');
+                    eyeSlashedIcon.classList.remove('hidden');
+                } else {
+                    passwordInput.type = 'password';
+                    eyeIcon.classList.remove('hidden');
+                    eyeSlashedIcon.classList.add('hidden');
+                }
+            });
+        }
+
+        window.onload = () => {
+            initializeFirebase();
+            setupPasswordToggle('login-password', 'login-pw-toggle');
+            setupPasswordToggle('signup-password', 'signup-pw-toggle');
+        };
+    </script>
+    <style>
+        .container { max-width: 900px; margin: auto; background-color: #ffffff; border-radius: 1rem; padding: 2rem; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+        .dark .container { background-color: #1f2937; } /* UX: Slightly lighter dark for container */
+        body { font-family: 'Inter', sans-serif; }
+        .dark body { background-color: #111827; } /* UX: Darker body background */
+        input[type="text"], input[type="number"], input[type="email"], input[type="password"] { transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease; }
+        .dark input[type="text"], .dark input[type="number"], .dark input[type="email"], .dark input[type="password"] { background-color: #374151; color: #d1d5db; border-color: #4b5563; }
+        input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type="number"] { -moz-appearance: textfield; }
+    </style>
+</head>
+<body class="p-4 md:p-8 bg-gray-100 dark:bg-gray-900">
+
+    <div class="relative container text-center">
+        <!-- Auth Section -->
+        <div id="auth-section">
+            <h1 class="text-4xl font-bold text-gray-900 dark:text-white mb-6">Golf Score Tracker</h1>
+            <div id="auth-message" class="mb-4 font-medium"></div>
+            
+            <form id="login-form" class="space-y-4">
+                <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100">Login</h2>
+                <input type="email" id="login-email" placeholder="Email" required class="w-full md:w-1/2 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white dark:border-gray-600">
+                <div class="relative w-full md:w-1/2 mx-auto">
+                    <input type="password" id="login-password" placeholder="Password" required class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white dark:border-gray-600 pr-10">
+                    <button type="button" id="login-pw-toggle" class="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-500">
+                        <svg class="h-5 w-5 eye-open" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                        <svg class="h-5 w-5 eye-slashed hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7 1.274-4.057 5.064 7-9.542-7 .847 0 1.673.124 2.468.352M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2 2l20 20" />
+                        </svg>
+                    </button>
+                </div>
+                <button type="submit" class="w-full md:w-1/2 px-8 py-3 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700 transition duration-300">Log In</button>
+                <p class="text-sm text-gray-600 dark:text-gray-400">Don't have an account? <a href="#" id="show-signup" class="text-blue-500 hover:underline">Sign Up</a></p>
+            </form>
+
+            <form id="signup-form" class="hidden space-y-4">
+                <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100">Sign Up</h2>
+                <input type="email" id="signup-email" placeholder="Email" required class="w-full md:w-1/2 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white dark:border-gray-600">
+                <div class="relative w-full md:w-1/2 mx-auto">
+                    <input type="password" id="signup-password" placeholder="Password" required class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white dark:border-gray-600 pr-10">
+                     <button type="button" id="signup-pw-toggle" class="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-500">
+                        <svg class="h-5 w-5 eye-open" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                        <svg class="h-5 w-5 eye-slashed hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7 1.274-4.057 5.064 7-9.542-7 .847 0 1.673.124 2.468.352M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2 2l20 20" />
+                        </svg>
+                    </button>
+                </div>
+                <button type="submit" class="w-full md:w-1/2 px-8 py-3 bg-green-600 text-white font-bold rounded-full shadow-lg hover:bg-green-700 transition duration-300">Sign Up</button>
+                <p class="text-sm text-gray-600 dark:text-gray-400">Already have an account? <a href="#" id="show-login" class="text-blue-500 hover:underline">Log In</a></p>
+            </form>
+        </div>
+
+        <!-- Main App Content (hidden until logged in) -->
+        <div id="app-content" class="hidden">
+            <div class="absolute top-4 left-4 flex space-x-2">
+                 <button id="golf-tips-btn" class="p-2 rounded-full bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200 shadow hover:bg-gray-300 dark:hover:bg-gray-600 transition" title="Get a Golf Tip">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                </button>
+            </div>
+            <div class="absolute top-4 right-4 flex space-x-2">
+                 <button id="settingsBtn" class="p-2 rounded-full bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200 shadow hover:bg-gray-300 dark:hover:bg-gray-600 transition" title="Settings">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                </button>
+                 <button id="closeSettingsBtn" class="p-2 rounded-full bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200 shadow hover:bg-gray-300 dark:hover:bg-gray-600 transition hidden" title="Close Settings">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+            </div>
+            
+            <h1 class="text-4xl font-bold text-gray-900 dark:text-white mb-6">Golf Score Tracker</h1>
+            <div id="main-section">
+                <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-4">Your Scorecards</h2>
+                <ul id="scorecard-list" class="space-y-2 mb-6 text-left"></ul>
+                <button id="newGameBtn" class="px-8 py-3 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700 transition duration-300">Start New Game</button>
+            </div>
+            <div id="setup-section" class="hidden mb-8">
+                <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-4">Enter Player Names</h2>
+                <div class="flex flex-col items-center space-y-4">
+                    <input type="text" id="player1" placeholder="Player 1" class="w-full md:w-1/2 p-3 border rounded-lg">
+                    <input type="text" id="player2" placeholder="Player 2" class="w-full md:w-1/2 p-3 border rounded-lg">
+                    <input type="text" id="player3" placeholder="Player 3 (Optional)" class="w-full md:w-1/2 p-3 border rounded-lg">
+                    <input type="text" id="player4" placeholder="Player 4 (Optional)" class="w-full md:w-1/2 p-3 border rounded-lg">
+                </div>
+                <button id="startGameBtn" class="mt-6 px-8 py-3 bg-green-600 text-white font-bold rounded-full shadow-lg hover:bg-green-700 transition">Start Game</button>
+            </div>
+            <div id="scorecard-section" class="hidden">
+                <div id="message-box" class="mb-4 font-medium"></div>
+                <div class="overflow-x-auto">
+                    <table id="scorecard" class="w-full border-collapse dark:text-gray-200">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div class="flex justify-center space-x-4 mt-6">
+                    <button id="endGameBtn" class="px-8 py-3 bg-red-600 text-white font-bold rounded-full shadow-lg hover:bg-red-700 transition">End & Save Game</button>
+                    <button id="backToMainBtn" class="px-8 py-3 bg-gray-500 text-white font-bold rounded-full shadow-lg hover:bg-gray-600 transition">Back to Main</button>
+                </div>
+            </div>
+            <div id="results-section" class="hidden mt-8 p-6 bg-green-100 border-l-4 border-green-500 text-green-800 rounded-lg relative dark:bg-green-900 dark:text-green-200 dark:border-green-600">
+                <button id="results-close-btn" class="absolute top-2 right-2 p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"><svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
+                <h2 class="text-3xl font-bold mb-4">Final Results</h2>
+                <div id="results-content" class="text-xl"></div>
+            </div>
+            <div id="settings-section" class="hidden">
+                 <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-4">Settings</h2>
+                 <button id="logoutBtnSettings" class="px-8 py-3 bg-red-600 text-white font-bold rounded-full shadow-lg hover:bg-red-700 transition">Log Out</button>
+            </div>
+        </div>
+
+        <!-- Modals -->
+        <div id="save-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 h-full w-full flex items-center justify-center">
+            <div class="p-8 bg-white w-96 mx-auto rounded-xl shadow-lg dark:bg-gray-800">
+                <h3 class="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Save Scorecard</h3>
+                <input type="text" id="save-modal-input" placeholder="Enter scorecard title" class="w-full p-3 border rounded-lg mb-4">
+                <div class="flex justify-end space-x-2">
+                    <button id="save-modal-close-btn" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 dark:bg-gray-600 dark:text-white dark:hover:bg-gray-500">Cancel</button>
+                    <button id="save-modal-save-btn" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Save</button>
+                </div>
+            </div>
+        </div>
+        <div id="tips-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 h-full w-full flex items-center justify-center">
+            <div class="p-8 bg-white w-96 mx-auto rounded-xl shadow-lg dark:bg-gray-800">
+                <h3 class="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Golf Tip of the Moment</h3>
+                <p id="tips-content" class="text-gray-600 dark:text-gray-300 mb-4"></p>
+                <div class="flex justify-end">
+                    <button id="tips-modal-close-btn" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Got it!</button>
+                </div>
+            </div>
+        </div>
+        <div id="delete-confirm-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 h-full w-full flex items-center justify-center">
+            <div class="p-8 bg-white w-96 mx-auto rounded-xl shadow-lg dark:bg-gray-800">
+                <h3 class="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Delete Scorecard</h3>
+                <p id="delete-confirm-message" class="text-gray-600 dark:text-gray-300 mb-4"></p>
+                <div class="flex justify-end space-x-2">
+                    <button id="delete-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 dark:bg-gray-600 dark:text-white dark:hover:bg-gray-500">Cancel</button>
+                    <button id="delete-confirm-btn" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">Delete</button>
+                </div>
+            </div>
+        </div>
+        <div id="logout-confirm-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 h-full w-full flex items-center justify-center">
+            <div class="p-8 bg-white w-96 mx-auto rounded-xl shadow-lg dark:bg-gray-800">
+                <h3 class="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Log Out</h3>
+                <p class="text-gray-600 dark:text-gray-300 mb-4">Are you sure you want to log out?</p>
+                <div class="flex justify-end space-x-2">
+                    <button id="logout-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 dark:bg-gray-600 dark:text-white dark:hover:bg-gray-500">Cancel</button>
+                    <button id="logout-confirm-btn" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">Log Out</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/service-worker.js')
+                    .then(registration => {
+                        console.log('ServiceWorker registration successful');
+                    })
+                    .catch(err => {
+                        console.log('ServiceWorker registration failed: ', err);
+                    });
+            });
+        }
+    </script>
+</body>
+</html>
