@@ -14,7 +14,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs, arrayUnion } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // User-provided Firebase configuration
         const firebaseConfig = {
@@ -28,7 +28,8 @@
         };
         
         const appId = firebaseConfig.projectId; // Use projectId as the app ID
-        let app, db, auth, userId, unsubscribeScorecards;
+        let app, db, auth, userId, unsubscribeScorecards, unsubscribeFriendRequests, unsubscribeFriends;
+        let userScorecards = []; // To hold user's scorecards for profile page
 
         // Function to initialize Firebase
         function initializeFirebase() {
@@ -74,19 +75,40 @@
         const scorecardSection = document.getElementById('scorecard-section');
         const resultsSection = document.getElementById('results-section');
         const settingsSection = document.getElementById('settings-section');
+        const communitySection = document.getElementById('community-section');
+        const friendsSection = document.getElementById('friends-section');
+        const profileSection = document.getElementById('profile-section');
         const scorecardList = document.getElementById('scorecard-list');
         const startGameBtn = document.getElementById('startGameBtn');
         const newGameBtn = document.getElementById('newGameBtn');
+        const communityBtn = document.getElementById('communityBtn');
+        const friendsBtn = document.getElementById('friendsBtn');
+        const profileBtn = document.getElementById('profileBtn');
         const endGameBtn = document.getElementById('endGameBtn');
         const backToMainBtn = document.getElementById('backToMainBtn');
         const settingsBtn = document.getElementById('settingsBtn');
         const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+        const closeSetupBtn = document.getElementById('closeSetupBtn');
+        const backFromCommunityBtn = document.getElementById('backFromCommunityBtn');
+        const backFromFriendsBtn = document.getElementById('backFromFriendsBtn');
+        const backFromProfileBtn = document.getElementById('backFromProfileBtn');
         const scorecardTable = document.getElementById('scorecard');
         const messageBox = document.getElementById('message-box');
         const authMessageBox = document.getElementById('auth-message');
         const resultsContent = document.getElementById('results-content');
         const resultsCloseBtn = document.getElementById('results-close-btn');
         const logoutBtnSettings = document.getElementById('logoutBtnSettings');
+        const nicknameInput = document.getElementById('nickname-input');
+        const saveNicknameBtn = document.getElementById('save-nickname-btn');
+        const userEmailDisplay = document.getElementById('user-email-display');
+        const profileNicknameDisplay = document.getElementById('profile-nickname-display');
+        const profilePersonalBest = document.getElementById('profile-personal-best');
+        const aboutMeInput = document.getElementById('about-me-input');
+        const saveAboutMeBtn = document.getElementById('save-about-me-btn');
+        const profileAboutMe = document.getElementById('profile-about-me');
+        const addFriendForm = document.getElementById('add-friend-form');
+        const friendRequestsList = document.getElementById('friend-requests-list');
+        const friendsList = document.getElementById('friends-list');
         
         // Auth form elements
         const loginForm = document.getElementById('login-form');
@@ -124,15 +146,22 @@
             scorecardSection.classList.add('hidden');
             resultsSection.classList.add('hidden');
             settingsSection.classList.add('hidden');
+            communitySection.classList.add('hidden');
+            friendsSection.classList.add('hidden');
+            profileSection.classList.add('hidden');
             document.getElementById(sectionId).classList.remove('hidden');
 
-            // Toggle settings button visibility
-            if (sectionId === 'settings-section') {
-                settingsBtn.classList.add('hidden');
-                closeSettingsBtn.classList.remove('hidden');
-            } else {
+            // Manage visibility of header buttons based on the current section
+            settingsBtn.classList.add('hidden');
+            closeSettingsBtn.classList.add('hidden');
+            closeSetupBtn.classList.add('hidden');
+
+            if (sectionId === 'main-section') {
                 settingsBtn.classList.remove('hidden');
-                closeSettingsBtn.classList.add('hidden');
+            } else if (sectionId === 'settings-section') {
+                closeSettingsBtn.classList.remove('hidden');
+            } else if (sectionId === 'setup-section') {
+                closeSetupBtn.classList.remove('hidden');
             }
         }
 
@@ -155,18 +184,19 @@
             }
             const scorecardsCollection = collection(db, `artifacts/${appId}/users/${userId}/scorecards`);
             unsubscribeScorecards = onSnapshot(scorecardsCollection, (snapshot) => {
-                const scorecards = [];
+                const fetchedScorecards = [];
                 snapshot.forEach(doc => {
                     const data = doc.data();
                     try {
                         const scores = JSON.parse(data.scores);
                         const pars = data.pars ? JSON.parse(data.pars) : Array(18).fill(0);
-                        scorecards.push({ id: doc.id, title: data.title, players: data.players, scores, pars });
+                        fetchedScorecards.push({ id: doc.id, title: data.title, players: data.players, scores, pars });
                     } catch(e) {
                         console.error("Could not parse data for doc:", doc.id, e);
                     }
                 });
-                renderScorecardList(scorecards);
+                userScorecards = fetchedScorecards;
+                renderScorecardList(userScorecards);
             });
         }
 
@@ -261,12 +291,15 @@
         }
 
         // Handles starting a new game
-        newGameBtn.addEventListener('click', () => {
+        newGameBtn.addEventListener('click', async () => {
             gameState.players = [];
             gameState.scores = [];
             gameState.pars = [];
             gameState.currentDocId = null;
-            document.getElementById('player1').value = '';
+            
+            // Fetch and pre-fill nickname
+            const userProfile = await getUserProfile();
+            document.getElementById('player1').value = userProfile.nickname || '';
             document.getElementById('player2').value = '';
             document.getElementById('player3').value = '';
             document.getElementById('player4').value = '';
@@ -502,8 +535,55 @@
 
         backToMainBtn.addEventListener('click', () => showSection('main-section'));
         resultsCloseBtn.addEventListener('click', () => showSection('main-section'));
-        settingsBtn.addEventListener('click', () => showSection('settings-section'));
+        settingsBtn.addEventListener('click', async () => {
+            const user = auth.currentUser;
+            if (user) {
+                userEmailDisplay.textContent = user.email;
+                const userProfile = await getUserProfile();
+                nicknameInput.value = userProfile.nickname || '';
+                aboutMeInput.value = userProfile.aboutMe || '';
+            }
+            showSection('settings-section');
+        });
         closeSettingsBtn.addEventListener('click', () => showSection('main-section'));
+        closeSetupBtn.addEventListener('click', () => showSection('main-section'));
+        communityBtn.addEventListener('click', () => showSection('community-section'));
+        backFromCommunityBtn.addEventListener('click', () => showSection('main-section'));
+        friendsBtn.addEventListener('click', () => showSection('friends-section'));
+        profileBtn.addEventListener('click', async () => {
+            const userProfile = await getUserProfile();
+            profileNicknameDisplay.textContent = userProfile.nickname || 'No nickname set';
+            profileAboutMe.textContent = userProfile.aboutMe || 'No bio yet.';
+            
+            if (userScorecards.length > 0) {
+                let personalBest = { score: Infinity, toPar: Infinity };
+
+                userScorecards.forEach(card => {
+                    if (card.scores && card.scores.length > 0 && card.pars) {
+                        const totalScore = card.scores[0].reduce((sum, score) => sum + (score || 0), 0);
+                        const totalPar = card.pars.reduce((sum, par) => sum + (par || 0), 0);
+                        
+                        if (totalScore < personalBest.score) {
+                            personalBest = { score: totalScore, toPar: totalScore - totalPar };
+                        }
+                    }
+                });
+                
+                if (personalBest.score !== Infinity) {
+                    const toParString = personalBest.toPar > 0 ? `+${personalBest.toPar}` : personalBest.toPar;
+                    profilePersonalBest.textContent = `Personal Best: ${personalBest.score} (${toParString})`;
+                } else {
+                     profilePersonalBest.textContent = 'Personal Best: N/A';
+                }
+
+            } else {
+                profilePersonalBest.textContent = 'Personal Best: N/A';
+            }
+
+            showSection('profile-section');
+        });
+        backFromFriendsBtn.addEventListener('click', () => showSection('community-section'));
+        backFromProfileBtn.addEventListener('click', () => showSection('community-section'));
 
         golfTipsBtn.addEventListener('click', () => {
             tipsContent.textContent = golfTips[Math.floor(Math.random() * golfTips.length)];
@@ -532,6 +612,41 @@
             logoutConfirmModal.classList.add('hidden');
         });
 
+        async function getUserProfile() {
+            if (!userId) return {};
+            const docRef = doc(db, `artifacts/${appId}/userProfiles`, userId);
+            const docSnap = await getDoc(docRef);
+            return docSnap.exists() ? docSnap.data() : {};
+        }
+
+        saveNicknameBtn.addEventListener('click', async () => {
+            const newNickname = nicknameInput.value.trim();
+            if (newNickname === "") {
+                showMessage("Nickname cannot be empty.", 'error', 'auth-message');
+                return;
+            }
+            try {
+                const docRef = doc(db, `artifacts/${appId}/userProfiles`, userId);
+                await setDoc(docRef, { nickname: newNickname }, { merge: true });
+                showMessage("Nickname saved!", 'success', 'auth-message');
+            } catch (error) {
+                console.error("Error saving nickname: ", error);
+                showMessage("Could not save nickname.", 'error', 'auth-message');
+            }
+        });
+        
+        saveAboutMeBtn.addEventListener('click', async () => {
+            const newAboutMe = aboutMeInput.value.trim();
+            try {
+                const docRef = doc(db, `artifacts/${appId}/userProfiles`, userId);
+                await setDoc(docRef, { aboutMe: newAboutMe }, { merge: true });
+                showMessage("About Me saved!", 'success', 'auth-message');
+            } catch (error) {
+                console.error("Error saving About Me: ", error);
+                showMessage("Could not save About Me.", 'error', 'auth-message');
+            }
+        });
+
         function setupAuthListener() {
             onAuthStateChanged(auth, (user) => {
                 if (user) {
@@ -539,12 +654,16 @@
                     authSection.classList.add('hidden');
                     appContent.classList.remove('hidden');
                     setupScorecardListener();
+                    setupFriendRequestListener();
+                    setupFriendsListListener();
                     showSection('main-section');
                 } else {
                     userId = null;
                     authSection.classList.remove('hidden');
                     appContent.classList.add('hidden');
                     if (unsubscribeScorecards) unsubscribeScorecards();
+                    if (unsubscribeFriendRequests) unsubscribeFriendRequests();
+                    if (unsubscribeFriends) unsubscribeFriends();
                     scorecardList.innerHTML = '';
                 }
             });
@@ -555,7 +674,16 @@
             const email = signupForm['signup-email'].value;
             const password = signupForm['signup-password'].value;
             createUserWithEmailAndPassword(auth, email, password)
-                .then(userCredential => signupForm.reset())
+                .then(async (userCredential) => {
+                    const user = userCredential.user;
+                    const userProfileRef = doc(db, `artifacts/${appId}/userProfiles`, user.uid);
+                    await setDoc(userProfileRef, {
+                        email: user.email,
+                        nickname: user.email.split('@')[0],
+                        friends: []
+                    });
+                    signupForm.reset();
+                })
                 .catch(error => showMessage(error.message, 'error', 'auth-message'));
         });
 
@@ -602,6 +730,114 @@
             });
         }
 
+        // --- Friends Logic ---
+        addFriendForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const friendEmail = addFriendForm['friend-email'].value.trim();
+            if (friendEmail === auth.currentUser.email) {
+                showMessage("You can't add yourself as a friend.", 'error', 'auth-message');
+                return;
+            }
+
+            const usersRef = collection(db, `artifacts/${appId}/userProfiles`);
+            const q = query(usersRef, where("email", "==", friendEmail));
+            const querySnapshot = await getDocs(q);
+
+            if (querySnapshot.empty) {
+                showMessage("User not found.", 'error', 'auth-message');
+                return;
+            }
+
+            const friendDoc = querySnapshot.docs[0];
+            const friendId = friendDoc.id;
+            const myProfile = await getUserProfile();
+
+            const requestRef = collection(db, `artifacts/${appId}/friendRequests`);
+            await addDoc(requestRef, {
+                from: userId,
+                to: friendId,
+                fromNickname: myProfile.nickname || auth.currentUser.email,
+                status: 'pending'
+            });
+
+            showMessage("Friend request sent!", 'success', 'auth-message');
+            addFriendForm.reset();
+        });
+
+        function setupFriendRequestListener() {
+            if (unsubscribeFriendRequests) unsubscribeFriendRequests();
+            const requestsRef = collection(db, `artifacts/${appId}/friendRequests`);
+            const q = query(requestsRef, where("to", "==", userId), where("status", "==", "pending"));
+            
+            unsubscribeFriendRequests = onSnapshot(q, (snapshot) => {
+                friendRequestsList.innerHTML = '';
+                if (snapshot.empty) {
+                    friendRequestsList.innerHTML = '<li class="text-gray-500 dark:text-gray-400">No new friend requests.</li>';
+                    return;
+                }
+                snapshot.forEach(doc => {
+                    const request = doc.data();
+                    const li = document.createElement('li');
+                    li.className = 'flex justify-between items-center p-2';
+                    li.innerHTML = `
+                        <span>${request.fromNickname}</span>
+                        <div>
+                            <button data-id="${doc.id}" data-from="${request.from}" class="accept-friend-btn px-3 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm">Accept</button>
+                            <button data-id="${doc.id}" class="decline-friend-btn px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm ml-2">Decline</button>
+                        </div>
+                    `;
+                    friendRequestsList.appendChild(li);
+                });
+            });
+        }
+
+        friendRequestsList.addEventListener('click', async (e) => {
+            const target = e.target;
+            const requestId = target.dataset.id;
+            if (!requestId) return;
+
+            const requestRef = doc(db, `artifacts/${appId}/friendRequests`, requestId);
+
+            if (target.classList.contains('accept-friend-btn')) {
+                const fromId = target.dataset.from;
+                const currentUserRef = doc(db, `artifacts/${appId}/userProfiles`, userId);
+                const friendUserRef = doc(db, `artifacts/${appId}/userProfiles`, fromId);
+
+                await updateDoc(currentUserRef, { friends: arrayUnion(fromId) });
+                await updateDoc(friendUserRef, { friends: arrayUnion(userId) });
+                await deleteDoc(requestRef);
+            } else if (target.classList.contains('decline-friend-btn')) {
+                await deleteDoc(requestRef);
+            }
+        });
+
+        function setupFriendsListListener() {
+            if (unsubscribeFriends) unsubscribeFriends();
+            const userProfileRef = doc(db, `artifacts/${appId}/userProfiles`, userId);
+            
+            unsubscribeFriends = onSnapshot(userProfileRef, async (doc) => {
+                friendsList.innerHTML = '';
+                const userData = doc.data();
+                if (!userData || !userData.friends || userData.friends.length === 0) {
+                    friendsList.innerHTML = '<li class="text-gray-500 dark:text-gray-400">You have no friends yet.</li>';
+                    return;
+                }
+
+                for (const friendId of userData.friends) {
+                    const friendDocRef = doc(db, `artifacts/${appId}/userProfiles`, friendId);
+                    const friendDoc = await getDoc(friendDocRef);
+                    if (friendDoc.exists()) {
+                        const friendData = friendDoc.data();
+                        const li = document.createElement('li');
+                        li.className = 'p-2';
+                        li.textContent = friendData.nickname || friendData.email;
+                        friendsList.appendChild(li);
+                    }
+                }
+            });
+        }
+
+
         window.onload = () => {
             initializeFirebase();
             setupPasswordToggle('login-password', 'login-pw-toggle');
@@ -613,8 +849,8 @@
         .dark .container { background-color: #1f2937; } /* UX: Slightly lighter dark for container */
         body { font-family: 'Inter', sans-serif; }
         .dark body { background-color: #111827; } /* UX: Darker body background */
-        input[type="text"], input[type="number"], input[type="email"], input[type="password"] { transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease; }
-        .dark input[type="text"], .dark input[type="number"], .dark input[type="email"], .dark input[type="password"] { background-color: #374151; color: #d1d5db; border-color: #4b5563; }
+        input[type="text"], input[type="number"], input[type="email"], input[type="password"], textarea { transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease; }
+        .dark input[type="text"], .dark input[type="number"], .dark input[type="email"], .dark input[type="password"], .dark textarea { background-color: #374151; color: #d1d5db; border-color: #4b5563; }
         input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         input[type="number"] { -moz-appearance: textfield; }
     </style>
@@ -682,13 +918,19 @@
                  <button id="closeSettingsBtn" class="p-2 rounded-full bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200 shadow hover:bg-gray-300 dark:hover:bg-gray-600 transition hidden" title="Close Settings">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
+                 <button id="closeSetupBtn" class="p-2 rounded-full bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200 shadow hover:bg-gray-300 dark:hover:bg-gray-600 transition hidden" title="Close Setup">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
             </div>
             
             <h1 class="text-4xl font-bold text-gray-900 dark:text-white mb-6">Golf Score Tracker</h1>
             <div id="main-section">
                 <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-4">Your Scorecards</h2>
                 <ul id="scorecard-list" class="space-y-2 mb-6 text-left"></ul>
-                <button id="newGameBtn" class="px-8 py-3 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700 transition duration-300">Start New Game</button>
+                <div class="flex justify-center space-x-4">
+                    <button id="newGameBtn" class="px-8 py-3 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700 transition duration-300">Start New Game</button>
+                    <button id="communityBtn" class="px-8 py-3 bg-green-600 text-white font-bold rounded-full shadow-lg hover:bg-green-700 transition duration-300">Community</button>
+                </div>
             </div>
             <div id="setup-section" class="hidden mb-8">
                 <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-4">Enter Player Names</h2>
@@ -720,7 +962,53 @@
             </div>
             <div id="settings-section" class="hidden">
                  <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-4">Settings</h2>
-                 <button id="logoutBtnSettings" class="px-8 py-3 bg-red-600 text-white font-bold rounded-full shadow-lg hover:bg-red-700 transition">Log Out</button>
+                 <div class="space-y-4 text-left max-w-md mx-auto">
+                    <div>
+                        <label for="user-email-display" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
+                        <p id="user-email-display" class="mt-1 text-lg text-gray-900 dark:text-white"></p>
+                    </div>
+                    <div>
+                        <label for="nickname-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Nickname</label>
+                        <input type="text" id="nickname-input" placeholder="Enter your nickname" class="w-full p-3 mt-1 border rounded-lg">
+                    </div>
+                    <button id="save-nickname-btn" class="w-full px-8 py-3 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700 transition">Save Nickname</button>
+                    <div>
+                        <label for="about-me-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300">About Me</label>
+                        <textarea id="about-me-input" rows="4" placeholder="Tell us a little about yourself..." class="w-full p-3 mt-1 border rounded-lg"></textarea>
+                    </div>
+                    <button id="save-about-me-btn" class="w-full px-8 py-3 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700 transition">Save About Me</button>
+                    <hr class="border-gray-300 dark:border-gray-600 my-6">
+                    <button id="logoutBtnSettings" class="w-full px-8 py-3 bg-red-600 text-white font-bold rounded-full shadow-lg hover:bg-red-700 transition">Log Out</button>
+                 </div>
+            </div>
+            <div id="community-section" class="hidden">
+                 <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-4">Community</h2>
+                 <div class="flex justify-center space-x-4">
+                    <button id="friendsBtn" class="px-8 py-3 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700 transition duration-300">Friends</button>
+                    <button id="profileBtn" class="px-8 py-3 bg-green-600 text-white font-bold rounded-full shadow-lg hover:bg-green-700 transition duration-300">Profile</button>
+                 </div>
+                 <button id="backFromCommunityBtn" class="mt-6 px-8 py-3 bg-gray-500 text-white font-bold rounded-full shadow-lg hover:bg-gray-600 transition">Back</button>
+            </div>
+            <div id="friends-section" class="hidden">
+                 <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-4">Friends</h2>
+                 <div class="max-w-md mx-auto text-left">
+                    <form id="add-friend-form" class="flex items-center space-x-2 mb-6">
+                        <input type="email" id="friend-email" placeholder="Enter friend's email" required class="w-full p-3 border rounded-lg">
+                        <button type="submit" class="px-4 py-3 bg-blue-600 text-white font-bold rounded-lg shadow-lg hover:bg-blue-700 transition">Add</button>
+                    </form>
+                    <h3 class="text-xl font-semibold text-gray-800 dark:text-gray-100 mb-2">Friend Requests</h3>
+                    <ul id="friend-requests-list" class="space-y-2 mb-6"></ul>
+                    <h3 class="text-xl font-semibold text-gray-800 dark:text-gray-100 mb-2">Your Friends</h3>
+                    <ul id="friends-list" class="space-y-2"></ul>
+                 </div>
+                 <button id="backFromFriendsBtn" class="mt-6 px-8 py-3 bg-gray-500 text-white font-bold rounded-full shadow-lg hover:bg-gray-600 transition">Back</button>
+            </div>
+            <div id="profile-section" class="hidden">
+                 <h2 class="text-2xl font-semibold text-gray-800 dark:text-gray-100 mb-4">Profile</h2>
+                 <p id="profile-nickname-display" class="text-3xl font-bold text-gray-900 dark:text-white"></p>
+                 <p id="profile-personal-best" class="text-lg text-gray-600 dark:text-gray-400 mb-4"></p>
+                 <p id="profile-about-me" class="text-base text-gray-600 dark:text-gray-400 mt-4 text-left max-w-md mx-auto"></p>
+                 <button id="backFromProfileBtn" class="mt-6 px-8 py-3 bg-gray-500 text-white font-bold rounded-full shadow-lg hover:bg-gray-600 transition">Back</button>
             </div>
         </div>
 
