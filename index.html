@@ -815,9 +815,9 @@
             if (unsubscribeFriends) unsubscribeFriends();
             const userProfileRef = doc(db, `artifacts/${appId}/userProfiles`, userId);
             
-            unsubscribeFriends = onSnapshot(userProfileRef, async (doc) => {
+            unsubscribeFriends = onSnapshot(userProfileRef, async (userDoc) => {
                 friendsList.innerHTML = '';
-                const userData = doc.data();
+                const userData = userDoc.data();
                 if (!userData || !userData.friends || userData.friends.length === 0) {
                     friendsList.innerHTML = '<li class="text-gray-500 dark:text-gray-400">You have no friends yet.</li>';
                     return;
